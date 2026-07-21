@@ -1,0 +1,15 @@
+[Unit]
+Description=Silero TTS Reader — text-to-speech daemon
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/silero-tts-reader
+Restart=on-failure
+RestartSec=5
+Environment=DISPLAY=:0
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+
+[Install]
+WantedBy=graphical-session.target
