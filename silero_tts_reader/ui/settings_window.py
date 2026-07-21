@@ -103,6 +103,7 @@ class HotkeyCapture(QPushButton):
 
     def _start_capture(self) -> None:
         self._capturing = True
+        self._draft_hotkey = ""
         self.setText("Нажмите новую клавишу...")
         self._update_style()
         self.setFocus()
@@ -111,8 +112,12 @@ class HotkeyCapture(QPushButton):
         if self._capturing and event.type() in (
             QEvent.Type.ShortcutOverride,
             QEvent.Type.KeyPress,
+            QEvent.Type.KeyRelease,
         ):
-            self.keyPressEvent(event)
+            if event.type() == QEvent.Type.KeyRelease:
+                self.keyReleaseEvent(event)
+            else:
+                self.keyPressEvent(event)
             event.accept()
             return True
         return super().event(event)
@@ -150,11 +155,13 @@ class HotkeyCapture(QPushButton):
             if main_mod not in parts:
                 parts.append(main_mod)
 
-            hotkey = "+".join(parts)
-            self.set_hotkey(hotkey)
-            self.hotkey_captured.emit(hotkey)
+            draft = "+".join(parts)
+            self._draft_hotkey = draft
+            display = HotkeyListener.format_hotkey(draft) + "..."
+            self.setText(display)
             return
 
+        # Regular (non-modifier) key press
         parts = []
         if modifiers & Qt.KeyboardModifier.ControlModifier:
             parts.append("<ctrl>")
@@ -171,8 +178,33 @@ class HotkeyCapture(QPushButton):
 
         if parts:
             hotkey = "+".join(parts)
+            self._draft_hotkey = ""
             self.set_hotkey(hotkey)
             self.hotkey_captured.emit(hotkey)
+
+    def keyReleaseEvent(self, event) -> None:
+        if not self._capturing:
+            super().keyReleaseEvent(event)
+            return
+
+        key = event.key()
+        mod_key_map = {
+            Qt.Key.Key_Control, Qt.Key.Key_Alt, Qt.Key.Key_Shift,
+            Qt.Key.Key_Meta, Qt.Key.Key_Super_L, Qt.Key.Key_Super_R
+        }
+        if key in mod_key_map and getattr(self, "_draft_hotkey", ""):
+            modifiers = event.modifiers()
+            active_mods = (
+                Qt.KeyboardModifier.ControlModifier |
+                Qt.KeyboardModifier.AltModifier |
+                Qt.KeyboardModifier.ShiftModifier |
+                Qt.KeyboardModifier.MetaModifier
+            )
+            if not (modifiers & active_mods):
+                hotkey = self._draft_hotkey
+                self._draft_hotkey = ""
+                self.set_hotkey(hotkey)
+                self.hotkey_captured.emit(hotkey)
 
     @staticmethod
     def _qt_key_to_name(key: int) -> str | None:
