@@ -120,6 +120,7 @@ class EvdevHotkeyListener(threading.Thread):
         self._hotkeys: dict[tuple[frozenset[int], frozenset[int]], Callable[[], None]] = {}
         self._stop_event = threading.Event()
         self._held_keys: set[int] = set()
+        self._dirty_single_modifiers: set[int] = set()
         self._lock = threading.Lock()
 
     def set_hotkeys(self, hotkey_map: dict[str, Callable[[], None]]) -> None:
@@ -164,34 +165,59 @@ class EvdevHotkeyListener(threading.Thread):
                 pass
 
     def _handle_key_event(self, code: int, value: int) -> None:
-        if value == 1:
-            self._held_keys.add(code)
-            self._check_hotkeys(code)
-        elif value == 0:
-            self._held_keys.discard(code)
-
-    def _check_hotkeys(self, trigger_code: int) -> None:
         with self._lock:
-            for (required_mods, allowed_triggers), callback in self._hotkeys.items():
-                if trigger_code not in allowed_triggers:
-                    continue
-                expected_keys = set(required_mods) | set(allowed_triggers)
-                if self._held_keys - expected_keys:
-                    continue
+            if value == 1:
+                # Mark any existing held modifiers as dirty if a new key is pressed alongside them
+                for held_code in list(self._held_keys):
+                    if held_code in _MODIFIERS and held_code != code:
+                        self._dirty_single_modifiers.add(held_code)
+                if code in _MODIFIERS:
+                    self._dirty_single_modifiers.discard(code)
 
-                held_mods = self._held_keys & _MODIFIERS
-                if self._mods_satisfied(required_mods, held_mods):
-                    def _delayed_check(req_m=required_mods, exp_k=expected_keys, cb=callback):
-                        import time
-                        time.sleep(0.05)
-                        with self._lock:
-                            if self._held_keys - exp_k:
-                                return
-                            current_held_mods = self._held_keys & _MODIFIERS
-                            if self._mods_satisfied(req_m, current_held_mods):
-                                cb()
+                self._held_keys.add(code)
+                self._check_combo_hotkeys(code)
 
-                    threading.Thread(target=_delayed_check, daemon=True).start()
+            elif value == 0:
+                # Check single modifier hotkeys on RELEASE
+                if code in _MODIFIERS:
+                    if code not in self._dirty_single_modifiers and self._held_keys == {code}:
+                        self._check_single_mod_release(code)
+
+                self._held_keys.discard(code)
+                if not (self._held_keys & _MODIFIERS):
+                    self._dirty_single_modifiers.clear()
+
+    def _check_single_mod_release(self, code: int) -> None:
+        for (required_mods, allowed_triggers), callback in self._hotkeys.items():
+            if code in allowed_triggers and (allowed_triggers <= _MODIFIERS) and required_mods == allowed_triggers:
+                threading.Thread(target=callback, daemon=True).start()
+
+    def _check_combo_hotkeys(self, trigger_code: int) -> None:
+        for (required_mods, allowed_triggers), callback in self._hotkeys.items():
+            # Skip single modifier hotkeys on press (they trigger on release)
+            if allowed_triggers <= _MODIFIERS and required_mods == allowed_triggers:
+                continue
+
+            if trigger_code not in allowed_triggers:
+                continue
+
+            expected_keys = set(required_mods) | set(allowed_triggers)
+            if self._held_keys - expected_keys:
+                continue
+
+            held_mods = self._held_keys & _MODIFIERS
+            if self._mods_satisfied(required_mods, held_mods):
+                def _delayed_check(req_m=required_mods, exp_k=expected_keys, cb=callback):
+                    import time
+                    time.sleep(0.10)  # 100ms stabilization window
+                    with self._lock:
+                        if self._held_keys - exp_k:
+                            return
+                        current_held_mods = self._held_keys & _MODIFIERS
+                        if self._mods_satisfied(req_m, current_held_mods):
+                            cb()
+
+                threading.Thread(target=_delayed_check, daemon=True).start()
 
     @staticmethod
     def _mods_satisfied(required: frozenset[int], held: set[int]) -> bool:
@@ -239,6 +265,7 @@ class PynputHotkeyListener:
         self._listener: pynput_keyboard.Listener | None = None
         self._hotkeys: dict[tuple[dict[str, bool], str], Callable[[], None]] = {}
         self._held_keys: set[str] = set()
+        self._dirty_single_modifiers: set[str] = set()
         self._lock = threading.Lock()
 
     def set_hotkeys(self, hotkey_map: dict[str, Callable[[], None]]) -> None:
@@ -310,12 +337,23 @@ class PynputHotkeyListener:
 
     def _on_press(self, key) -> None:
         key_name = self._get_key_name(key)
+        mods = {"ctrl", "alt", "shift", "super"}
         with self._lock:
+            for held in list(self._held_keys):
+                if held in mods and held != key_name:
+                    self._dirty_single_modifiers.add(held)
+            if key_name in mods:
+                self._dirty_single_modifiers.discard(key_name)
+
             self._held_keys.add(key_name)
             held_copy = set(self._held_keys)
             hotkeys_copy = dict(self._hotkeys)
 
         for (req_mods, trigger), callback in hotkeys_copy.items():
+            is_single_mod = (trigger in mods and req_mods[trigger] and sum(req_mods.values()) == 1)
+            if is_single_mod:
+                continue
+
             if key_name == trigger:
                 expected_keys = {k for k, v in req_mods.items() if v} | {trigger}
                 if held_copy - expected_keys:
@@ -334,7 +372,7 @@ class PynputHotkeyListener:
                 ):
                     def _delayed_pynput_check(rm=req_mods, tr=trigger, exp_k=expected_keys, cb=callback):
                         import time
-                        time.sleep(0.05)
+                        time.sleep(0.10)  # 100ms stabilization window
                         with self._lock:
                             if self._held_keys - exp_k:
                                 return
@@ -354,8 +392,17 @@ class PynputHotkeyListener:
 
     def _on_release(self, key) -> None:
         key_name = self._get_key_name(key)
+        mods = {"ctrl", "alt", "shift", "super"}
         with self._lock:
+            if key_name in mods:
+                if key_name not in self._dirty_single_modifiers and self._held_keys == {key_name}:
+                    for (req_mods, trigger), callback in self._hotkeys.items():
+                        if trigger == key_name and req_mods[key_name] and sum(req_mods.values()) == 1:
+                            threading.Thread(target=callback, daemon=True).start()
+
             self._held_keys.discard(key_name)
+            if not (self._held_keys & mods):
+                self._dirty_single_modifiers.clear()
 
     def stop_listening(self) -> None:
         with self._lock:
