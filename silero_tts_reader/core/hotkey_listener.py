@@ -85,12 +85,6 @@ def normalize_for_pynput(hotkey_str: str) -> str:
 def _parse_evdev_hotkey(hotkey_str: str) -> tuple[frozenset[int], frozenset[int]] | None:
     parts = [p.strip().strip("<>").lower() for p in hotkey_str.split("+")]
 
-    if len(parts) == 1 and parts[0] in _SINGLE_MODIFIER_EVDEV:
-        return frozenset(), frozenset(_SINGLE_MODIFIER_EVDEV[parts[0]])
-
-    mods: set[int] = set()
-    trigger: int | None = None
-
     mod_name_to_codes = {
         "ctrl": {ec.KEY_LEFTCTRL, ec.KEY_RIGHTCTRL},
         "alt":  {ec.KEY_LEFTALT, ec.KEY_RIGHTALT},
@@ -99,6 +93,13 @@ def _parse_evdev_hotkey(hotkey_str: str) -> tuple[frozenset[int], frozenset[int]
         "meta": {ec.KEY_LEFTMETA, ec.KEY_RIGHTMETA},
         "cmd":  {ec.KEY_LEFTMETA, ec.KEY_RIGHTMETA},
     }
+
+    if len(parts) == 1 and parts[0] in mod_name_to_codes:
+        codes = mod_name_to_codes[parts[0]]
+        return frozenset(codes), frozenset(codes)
+
+    mods: set[int] = set()
+    trigger: int | None = None
 
     for part in parts:
         if part in mod_name_to_codes:
