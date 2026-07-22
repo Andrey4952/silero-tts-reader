@@ -180,20 +180,22 @@ class EvdevHotkeyListener(threading.Thread):
 
     @staticmethod
     def _mods_satisfied(required: frozenset[int], held: set[int]) -> bool:
-        ctrl_req  = required & {ec.KEY_LEFTCTRL, ec.KEY_RIGHTCTRL}
-        alt_req   = required & {ec.KEY_LEFTALT,  ec.KEY_RIGHTALT}
-        shift_req = required & {ec.KEY_LEFTSHIFT, ec.KEY_RIGHTSHIFT}
-        super_req = required & {ec.KEY_LEFTMETA, ec.KEY_RIGHTMETA}
+        ctrl_req  = bool(required & {ec.KEY_LEFTCTRL,  ec.KEY_RIGHTCTRL})
+        alt_req   = bool(required & {ec.KEY_LEFTALT,   ec.KEY_RIGHTALT})
+        shift_req = bool(required & {ec.KEY_LEFTSHIFT, ec.KEY_RIGHTSHIFT})
+        super_req = bool(required & {ec.KEY_LEFTMETA,  ec.KEY_RIGHTMETA})
 
-        if ctrl_req  and not (held & {ec.KEY_LEFTCTRL,  ec.KEY_RIGHTCTRL}):
-            return False
-        if alt_req   and not (held & {ec.KEY_LEFTALT,   ec.KEY_RIGHTALT}):
-            return False
-        if shift_req and not (held & {ec.KEY_LEFTSHIFT, ec.KEY_RIGHTSHIFT}):
-            return False
-        if super_req and not (held & {ec.KEY_LEFTMETA,  ec.KEY_RIGHTMETA}):
-            return False
-        return True
+        ctrl_held  = bool(held & {ec.KEY_LEFTCTRL,  ec.KEY_RIGHTCTRL})
+        alt_held   = bool(held & {ec.KEY_LEFTALT,   ec.KEY_RIGHTALT})
+        shift_held = bool(held & {ec.KEY_LEFTSHIFT, ec.KEY_RIGHTSHIFT})
+        super_held = bool(held & {ec.KEY_LEFTMETA,  ec.KEY_RIGHTMETA})
+
+        return (
+            ctrl_req == ctrl_held and
+            alt_req == alt_held and
+            shift_req == shift_held and
+            super_req == super_held
+        )
 
     @staticmethod
     def get_keyboards() -> list:
