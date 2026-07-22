@@ -177,7 +177,15 @@ class EvdevHotkeyListener(threading.Thread):
                     continue
                 held_mods = self._held_keys & _MODIFIERS
                 if self._mods_satisfied(required_mods, held_mods):
-                    threading.Thread(target=callback, daemon=True).start()
+                    def _delayed_check(req_m=required_mods, cb=callback):
+                        import time
+                        time.sleep(0.05)
+                        with self._lock:
+                            current_held_mods = self._held_keys & _MODIFIERS
+                            if self._mods_satisfied(req_m, current_held_mods):
+                                cb()
+
+                    threading.Thread(target=_delayed_check, daemon=True).start()
 
     @staticmethod
     def _mods_satisfied(required: frozenset[int], held: set[int]) -> bool:
@@ -222,21 +230,120 @@ class EvdevHotkeyListener(threading.Thread):
 
 class PynputHotkeyListener:
     def __init__(self) -> None:
-        self._listener: pynput_keyboard.GlobalHotKeys | None = None
+        self._listener: pynput_keyboard.Listener | None = None
+        self._hotkeys: dict[tuple[dict[str, bool], str], Callable[[], None]] = {}
+        self._held_keys: set[str] = set()
         self._lock = threading.Lock()
 
     def set_hotkeys(self, hotkey_map: dict[str, Callable[[], None]]) -> None:
         self.stop_listening()
-        normalized_map = {
-            normalize_for_pynput(hk): cb for hk, cb in hotkey_map.items()
-        }
+        new_hotkeys = {}
+        for hk_str, cb in hotkey_map.items():
+            parsed = self._parse_pynput_hotkey(hk_str)
+            if parsed:
+                new_hotkeys[parsed] = cb
+
         with self._lock:
+            self._hotkeys = new_hotkeys
             try:
-                self._listener = pynput_keyboard.GlobalHotKeys(normalized_map)
+                self._listener = pynput_keyboard.Listener(
+                    on_press=self._on_press,
+                    on_release=self._on_release
+                )
                 self._listener.daemon = True
                 self._listener.start()
             except Exception as e:
                 print(f"  ⚠ pynput error: {e}", flush=True)
+
+    @staticmethod
+    def _parse_pynput_hotkey(hotkey_str: str) -> tuple[dict[str, bool], str] | None:
+        parts = [p.strip().strip("<>").lower() for p in hotkey_str.split("+")]
+        req_mods = {"ctrl": False, "alt": False, "shift": False, "super": False}
+        trigger = None
+
+        mod_map = {
+            "ctrl": "ctrl", "alt": "alt", "shift": "shift",
+            "super": "super", "meta": "super", "cmd": "super"
+        }
+
+        if len(parts) == 1 and parts[0] in mod_map:
+            mod_key = mod_map[parts[0]]
+            req_mods[mod_key] = True
+            return req_mods, mod_key
+
+        for part in parts:
+            if part in mod_map:
+                req_mods[mod_map[part]] = True
+            else:
+                trigger = part
+
+        if trigger is None:
+            return None
+        return req_mods, trigger
+
+    def _get_key_name(self, key) -> str:
+        if isinstance(key, pynput_keyboard.Key):
+            name = key.name
+            if name.startswith("ctrl"):
+                return "ctrl"
+            if name.startswith("alt"):
+                return "alt"
+            if name.startswith("shift"):
+                return "shift"
+            if name in ("cmd", "cmd_l", "cmd_r"):
+                return "super"
+            return name
+        elif hasattr(key, "char") and key.char:
+            return key.char.lower()
+        elif hasattr(key, "vk") and key.vk:
+            try:
+                return chr(key.vk).lower()
+            except Exception:
+                return str(key).lower()
+        return str(key).lower()
+
+    def _on_press(self, key) -> None:
+        key_name = self._get_key_name(key)
+        with self._lock:
+            self._held_keys.add(key_name)
+            held_copy = set(self._held_keys)
+            hotkeys_copy = dict(self._hotkeys)
+
+        for (req_mods, trigger), callback in hotkeys_copy.items():
+            if key_name == trigger:
+                held_ctrl = "ctrl" in held_copy
+                held_alt = "alt" in held_copy
+                held_shift = "shift" in held_copy
+                held_super = "super" in held_copy
+
+                if (
+                    req_mods["ctrl"] == held_ctrl and
+                    req_mods["alt"] == held_alt and
+                    req_mods["shift"] == held_shift and
+                    req_mods["super"] == held_super
+                ):
+                    def _delayed_pynput_check(rm=req_mods, tr=trigger, cb=callback):
+                        import time
+                        time.sleep(0.05)
+                        with self._lock:
+                            cur_ctrl = "ctrl" in self._held_keys
+                            cur_alt = "alt" in self._held_keys
+                            cur_shift = "shift" in self._held_keys
+                            cur_super = "super" in self._held_keys
+                            if (
+                                rm["ctrl"] == cur_ctrl and
+                                rm["alt"] == cur_alt and
+                                rm["shift"] == cur_shift and
+                                rm["super"] == cur_super
+                            ):
+                                cb()
+
+                    threading.Thread(target=_delayed_pynput_check, daemon=True).start()
+
+    def _on_release(self, key) -> None:
+        key_name = self._get_key_name(key)
+        with self._lock:
+            self._held_keys.discard(key_name)
 
     def stop_listening(self) -> None:
         with self._lock:
