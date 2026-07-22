@@ -175,12 +175,18 @@ class EvdevHotkeyListener(threading.Thread):
             for (required_mods, allowed_triggers), callback in self._hotkeys.items():
                 if trigger_code not in allowed_triggers:
                     continue
+                expected_keys = set(required_mods) | set(allowed_triggers)
+                if self._held_keys - expected_keys:
+                    continue
+
                 held_mods = self._held_keys & _MODIFIERS
                 if self._mods_satisfied(required_mods, held_mods):
-                    def _delayed_check(req_m=required_mods, cb=callback):
+                    def _delayed_check(req_m=required_mods, exp_k=expected_keys, cb=callback):
                         import time
                         time.sleep(0.05)
                         with self._lock:
+                            if self._held_keys - exp_k:
+                                return
                             current_held_mods = self._held_keys & _MODIFIERS
                             if self._mods_satisfied(req_m, current_held_mods):
                                 cb()
@@ -311,6 +317,10 @@ class PynputHotkeyListener:
 
         for (req_mods, trigger), callback in hotkeys_copy.items():
             if key_name == trigger:
+                expected_keys = {k for k, v in req_mods.items() if v} | {trigger}
+                if held_copy - expected_keys:
+                    continue
+
                 held_ctrl = "ctrl" in held_copy
                 held_alt = "alt" in held_copy
                 held_shift = "shift" in held_copy
@@ -322,10 +332,12 @@ class PynputHotkeyListener:
                     req_mods["shift"] == held_shift and
                     req_mods["super"] == held_super
                 ):
-                    def _delayed_pynput_check(rm=req_mods, tr=trigger, cb=callback):
+                    def _delayed_pynput_check(rm=req_mods, tr=trigger, exp_k=expected_keys, cb=callback):
                         import time
                         time.sleep(0.05)
                         with self._lock:
+                            if self._held_keys - exp_k:
+                                return
                             cur_ctrl = "ctrl" in self._held_keys
                             cur_alt = "alt" in self._held_keys
                             cur_shift = "shift" in self._held_keys
