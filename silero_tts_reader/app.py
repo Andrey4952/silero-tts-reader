@@ -72,17 +72,12 @@ class Application(QApplication):
         self._widget = PlaybackWidget()
         self._widget.restore_position(*self._config.widget_position)
 
-        def _update_widget_theme():
-            self._widget.apply_theme(
-                is_dark=self._theme_manager.is_dark(),
-                accent_color=self._theme_manager.accent_color(),
-            )
-
-        self._theme_manager.theme_changed.connect(lambda _: _update_widget_theme())
-        self._theme_manager.accent_changed.connect(_update_widget_theme)
+        self._theme_manager.theme_changed.connect(lambda _: self._update_widget_theme())
+        self._theme_manager.accent_changed.connect(self._update_widget_theme)
 
         self._theme_manager.use_system_accent = self._config.use_system_accent
         self._theme_manager.set_mode(self._config.theme)
+        self._update_widget_theme()
 
         self._tray = TrayIcon(
             on_speak_clipboard=self._on_speak_clipboard_hotkey,
@@ -297,9 +292,16 @@ class Application(QApplication):
         dlg.settings_saved.connect(self._apply_settings)
         dlg.exec()
 
+    def _update_widget_theme(self) -> None:
+        self._widget.apply_theme(
+            is_dark=self._theme_manager.is_dark(),
+            accent_color=self._theme_manager.accent_color(),
+        )
+
     def _apply_settings(self) -> None:
         self._theme_manager.use_system_accent = self._config.use_system_accent
         self._theme_manager.set_mode(self._config.theme)
+        self._update_widget_theme()
         self._register_hotkeys()
         self._widget.set_speed(self._config.speed)
 
